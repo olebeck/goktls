@@ -109,11 +109,12 @@ func (hs *clientHandshakeStateTLS13) handshake() error {
 		return err
 	}
 
-	c.isHandshakeComplete.Store(true)
 	// Enable kernel TLS if possible
 	if err := c.enableKernelTLS(c.cipherSuite, c.in.key, c.out.key, c.in.iv, c.out.iv, &c.out.cipher, &c.in.cipher); err != nil {
 		return err
 	}
+
+	c.isHandshakeComplete.Store(true)
 
 	return nil
 }
