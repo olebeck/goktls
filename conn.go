@@ -117,6 +117,8 @@ type Conn struct {
 	activeCall atomic.Int32
 
 	tmp [16]byte
+
+	atLeastReader atLeastReader
 }
 
 // Access to net.Conn methods.
@@ -630,81 +632,76 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	)
 
 	if _, ok := c.in.cipher.(kTLSCipher); ok {
-		if c.rawInput.Len() < maxPlaintext {
-			c.rawInput.Grow(maxPlaintext - c.rawInput.Len())
+		if c.rawInput.Len() < 0xfff {
+			c.rawInput.Grow(0xfff - c.rawInput.Len())
 		}
-		data = c.rawInput.Bytes()[:maxPlaintext]
+		data = c.rawInput.Bytes()[:0xfff]
 		if typ, n, err = ktlsReadRecord(c.conn.(*net.TCPConn), data); err != nil {
 			return err
 		}
 		data = data[:n]
-		// TODO: process the data here instead of goto processMessage
-		// && try to use ktlsReadRecord to write data directly into input
-		// rather than copy it later.
-		goto processMessage
-	}
-
-	// Read header, payload.
-	if err := c.readFromUntil(c.conn, recordHeaderLen); err != nil {
-		// RFC 8446, Section 6.1 suggests that EOF without an alertCloseNotify
-		// is an error, but popular web sites seem to do this, so we accept it
-		// if and only if at the record boundary.
-		if err == io.ErrUnexpectedEOF && c.rawInput.Len() == 0 {
-			err = io.EOF
+	} else {
+		// Read header, payload.
+		if err := c.readFromUntil(c.conn, recordHeaderLen); err != nil {
+			// RFC 8446, Section 6.1 suggests that EOF without an alertCloseNotify
+			// is an error, but popular web sites seem to do this, so we accept it
+			// if and only if at the record boundary.
+			if err == io.ErrUnexpectedEOF && c.rawInput.Len() == 0 {
+				err = io.EOF
+			}
+			if e, ok := err.(net.Error); !ok || !e.Temporary() {
+				c.in.setErrorLocked(err)
+			}
+			return err
 		}
-		if e, ok := err.(net.Error); !ok || !e.Temporary() {
-			c.in.setErrorLocked(err)
+		hdr = c.rawInput.Bytes()[:recordHeaderLen]
+		typ = recordType(hdr[0])
+
+		// No valid TLS record has a type of 0x80, however SSLv2 handshakes
+		// start with a uint16 length where the MSB is set and the first record
+		// is always < 256 bytes long. Therefore typ == 0x80 strongly suggests
+		// an SSLv2 client.
+		if !handshakeComplete && typ == 0x80 {
+			c.sendAlert(alertProtocolVersion)
+			return c.in.setErrorLocked(c.newRecordHeaderError(nil, "unsupported SSLv2 handshake received"))
 		}
-		return err
-	}
-	hdr = c.rawInput.Bytes()[:recordHeaderLen]
-	typ = recordType(hdr[0])
 
-	// No valid TLS record has a type of 0x80, however SSLv2 handshakes
-	// start with a uint16 length where the MSB is set and the first record
-	// is always < 256 bytes long. Therefore typ == 0x80 strongly suggests
-	// an SSLv2 client.
-	if !handshakeComplete && typ == 0x80 {
-		c.sendAlert(alertProtocolVersion)
-		return c.in.setErrorLocked(c.newRecordHeaderError(nil, "unsupported SSLv2 handshake received"))
-	}
+		vers = uint16(hdr[1])<<8 | uint16(hdr[2])
+		n = int(hdr[3])<<8 | int(hdr[4])
+		if c.haveVers && c.vers != VersionTLS13 && vers != c.vers {
+			c.sendAlert(alertProtocolVersion)
+			msg := fmt.Sprintf("received record with version %x when expecting version %x", vers, c.vers)
+			return c.in.setErrorLocked(c.newRecordHeaderError(nil, msg))
+		}
+		if !c.haveVers {
+			// First message, be extra suspicious: this might not be a TLS
+			// client. Bail out before reading a full 'body', if possible.
+			// The current max version is 3.3 so if the version is >= 16.0,
+			// it's probably not real.
+			if (typ != recordTypeAlert && typ != recordTypeHandshake) || vers >= 0x1000 {
+				return c.in.setErrorLocked(c.newRecordHeaderError(c.conn, "first record does not look like a TLS handshake"))
+			}
+		}
+		if c.vers == VersionTLS13 && n > maxCiphertextTLS13 || n > maxCiphertext {
+			c.sendAlert(alertRecordOverflow)
+			msg := fmt.Sprintf("oversized record received with length %d", n)
+			return c.in.setErrorLocked(c.newRecordHeaderError(nil, msg))
+		}
+		if err := c.readFromUntil(c.conn, recordHeaderLen+n); err != nil {
+			if e, ok := err.(net.Error); !ok || !e.Temporary() {
+				c.in.setErrorLocked(err)
+			}
+			return err
+		}
 
-	vers = uint16(hdr[1])<<8 | uint16(hdr[2])
-	n = int(hdr[3])<<8 | int(hdr[4])
-	if c.haveVers && c.vers != VersionTLS13 && vers != c.vers {
-		c.sendAlert(alertProtocolVersion)
-		msg := fmt.Sprintf("received record with version %x when expecting version %x", vers, c.vers)
-		return c.in.setErrorLocked(c.newRecordHeaderError(nil, msg))
-	}
-	if !c.haveVers {
-		// First message, be extra suspicious: this might not be a TLS
-		// client. Bail out before reading a full 'body', if possible.
-		// The current max version is 3.3 so if the version is >= 16.0,
-		// it's probably not real.
-		if (typ != recordTypeAlert && typ != recordTypeHandshake) || vers >= 0x1000 {
-			return c.in.setErrorLocked(c.newRecordHeaderError(c.conn, "first record does not look like a TLS handshake"))
+		// Process message.
+		record = c.rawInput.Next(recordHeaderLen + n)
+		data, typ, err = c.in.decrypt(record)
+		if err != nil {
+			return c.in.setErrorLocked(c.sendAlert(err.(alert)))
 		}
 	}
-	if c.vers == VersionTLS13 && n > maxCiphertextTLS13 || n > maxCiphertext {
-		c.sendAlert(alertRecordOverflow)
-		msg := fmt.Sprintf("oversized record received with length %d", n)
-		return c.in.setErrorLocked(c.newRecordHeaderError(nil, msg))
-	}
-	if err := c.readFromUntil(c.conn, recordHeaderLen+n); err != nil {
-		if e, ok := err.(net.Error); !ok || !e.Temporary() {
-			c.in.setErrorLocked(err)
-		}
-		return err
-	}
 
-	// Process message.
-	record = c.rawInput.Next(recordHeaderLen + n)
-	data, typ, err = c.in.decrypt(record)
-	if err != nil {
-		return c.in.setErrorLocked(c.sendAlert(err.(alert)))
-	}
-
-processMessage:
 	if len(data) > maxPlaintext {
 		return c.in.setErrorLocked(c.sendAlert(alertRecordOverflow))
 	}
@@ -840,7 +837,11 @@ func (c *Conn) readFromUntil(r io.Reader, n int) error {
 	// attempt to fetch it so that it can be used in (*Conn).Read to
 	// "predict" closeNotify alerts.
 	c.rawInput.Grow(needs + bytes.MinRead)
-	_, err := c.rawInput.ReadFrom(&atLeastReader{r, int64(needs)})
+	c.atLeastReader = atLeastReader{
+		R: r, N: int64(needs),
+	}
+	_, err := c.rawInput.ReadFrom(&c.atLeastReader)
+	c.atLeastReader = atLeastReader{}
 	return err
 }
 
@@ -1551,6 +1552,10 @@ func (c *Conn) handshakeContext(ctx context.Context) (ret error) {
 	if c.handshakeErr != nil && c.isHandshakeComplete.Load() {
 		panic("tls: internal error: handshake returned an error but is marked successful")
 	}
+
+	c.peerCertificates = nil
+	c.activeCertHandles = nil
+	c.verifiedChains = nil
 
 	return c.handshakeErr
 }

@@ -335,7 +335,7 @@ func (c *Conn) IsKTLSRXEnabled() bool {
 	return ok
 }
 
-func (c *Conn) enableKernelTLS(cipherSuiteID uint16, inKey, outKey, inIV, outIV []byte) error {
+func (c *Conn) enableKernelTLS(cipherSuiteID uint16, inKey, outKey, inIV, outIV []byte, clientCipher, serverCipher *any) error {
 	if !kTLSSupport {
 		return nil
 	}
@@ -346,19 +346,19 @@ func (c *Conn) enableKernelTLS(cipherSuiteID uint16, inKey, outKey, inIV, outIV 
 			return nil
 		}
 		Debugln("try to enable kernel tls AES_128_GCM for tls 1.2")
-		return ktlsEnableAES(c, VersionTLS12, ktlsEnableAES128GCM, 16, inKey, outKey, inIV, outIV)
+		return ktlsEnableAES(c, VersionTLS12, ktlsEnableAES128GCM, 16, inKey, outKey, inIV, outIV, clientCipher, serverCipher)
 	case TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, TLS_RSA_WITH_AES_256_GCM_SHA384:
 		if !kTLSSupportAESGCM256 {
 			return nil
 		}
 		Debugln("try to enable kernel tls AES_256_GCM for tls 1.2")
-		return ktlsEnableAES(c, VersionTLS12, ktlsEnableAES256GCM, 32, inKey, outKey, inIV, outIV)
+		return ktlsEnableAES(c, VersionTLS12, ktlsEnableAES256GCM, 32, inKey, outKey, inIV, outIV, clientCipher, serverCipher)
 	case TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:
 		if !kTLSSupportCHACHA20POLY1305 {
 			return nil
 		}
 		Debugln("try to enable kernel tls CHACHA20_POLY1305 for tls 1.2")
-		return ktlsEnableCHACHA20(c, VersionTLS12, inKey, outKey, inIV, outIV)
+		return ktlsEnableCHACHA20(c, VersionTLS12, inKey, outKey, inIV, outIV, clientCipher, serverCipher)
 
 	// Kernel TLS 1.3
 	case TLS_AES_128_GCM_SHA256:
@@ -366,19 +366,19 @@ func (c *Conn) enableKernelTLS(cipherSuiteID uint16, inKey, outKey, inIV, outIV 
 			return nil
 		}
 		Debugln("try to enable kernel tls AES_128_GCM for tls 1.3")
-		return ktlsEnableAES(c, VersionTLS13, ktlsEnableAES128GCM, 16, inKey, outKey, inIV, outIV)
+		return ktlsEnableAES(c, VersionTLS13, ktlsEnableAES128GCM, 16, inKey, outKey, inIV, outIV, clientCipher, serverCipher)
 	case TLS_AES_256_GCM_SHA384:
 		if !kTLSSupportAESGCM256 || !kTLSSupportTLS13TX {
 			return nil
 		}
 		Debugln("try to enable kernel tls AES_256_GCM tls 1.3")
-		return ktlsEnableAES(c, VersionTLS13, ktlsEnableAES256GCM, 32, inKey, outKey, inIV, outIV)
+		return ktlsEnableAES(c, VersionTLS13, ktlsEnableAES256GCM, 32, inKey, outKey, inIV, outIV, clientCipher, serverCipher)
 	case TLS_CHACHA20_POLY1305_SHA256:
 		if !kTLSSupportCHACHA20POLY1305 || !kTLSSupportTLS13TX {
 			return nil
 		}
 		Debugln("try to enable kernel tls CHACHA20_POLY1305 for tls 1.3")
-		return ktlsEnableCHACHA20(c, VersionTLS13, inKey, outKey, inIV, outIV)
+		return ktlsEnableCHACHA20(c, VersionTLS13, inKey, outKey, inIV, outIV, clientCipher, serverCipher)
 	}
 	return nil
 }

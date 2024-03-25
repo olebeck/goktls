@@ -98,7 +98,8 @@ func ktlsEnableAES(
 	version uint16,
 	enableFunc func(c *net.TCPConn, version uint16, opt int, skip bool, key, iv, seq []byte) error,
 	keyLen int,
-	inKey, outKey, inIV, outIV []byte) error {
+	inKey, outKey, inIV, outIV []byte,
+	clientCipher, serverCipher *any) error {
 	var ulpEnabled bool
 
 	// Try to enable Kernel TLS TX
@@ -113,7 +114,7 @@ func ktlsEnableAES(
 			}
 			ulpEnabled = true
 			Debugln("kTLS: TLS_TX enabled")
-			c.out.cipher = kTLSCipher{}
+			*clientCipher = kTLSCipher{}
 			// Try to enable kTLS TX zerocopy sendfile.
 			// Only enabled if the hardware supports the protocol.
 			// Otherwise, get an error message which is fine.
@@ -136,7 +137,7 @@ func ktlsEnableAES(
 				return err
 			}
 			Debugln("kTLS: TLS_RX enabled")
-			c.in.cipher = kTLSCipher{}
+			*serverCipher = kTLSCipher{}
 			// Only enable the TLS_RX_EXPECT_NO_PAD for TLS 1.3
 			// TODO: safe to enable only if the remote end is trusted, otherwise
 			// it is an attack vector to doubling the TLS processing cost.
@@ -154,7 +155,7 @@ func ktlsEnableAES(
 	return nil
 }
 
-func ktlsEnableCHACHA20(c *Conn, version uint16, inKey, outKey, inIV, outIV []byte) error {
+func ktlsEnableCHACHA20(c *Conn, version uint16, inKey, outKey, inIV, outIV []byte, clientCipher, serverCipher *any) error {
 	var ulpEnabled bool
 
 	// Try to enable Kernel TLS TX
@@ -169,7 +170,7 @@ func ktlsEnableCHACHA20(c *Conn, version uint16, inKey, outKey, inIV, outIV []by
 		}
 		ulpEnabled = true
 		Debugln("kTLS: TLS_TX enabled")
-		c.out.cipher = kTLSCipher{}
+		*clientCipher = kTLSCipher{}
 		// Try to enable kTLS TX zerocopy sendfile.
 		// Only enabled if the hardware supports the protocol.
 		// Otherwise, get an error message which is fine.
@@ -189,7 +190,7 @@ func ktlsEnableCHACHA20(c *Conn, version uint16, inKey, outKey, inIV, outIV []by
 			return err
 		}
 		Debugln("kTLS: TLS_RX enabled")
-		c.in.cipher = kTLSCipher{}
+		*serverCipher = kTLSCipher{}
 		// Only enable the TLS_RX_EXPECT_NO_PAD for TLS 1.3
 		// TODO: safe to enable only if the remote end is trusted, otherwise
 		// it is an attack vector to doubling the TLS processing cost.

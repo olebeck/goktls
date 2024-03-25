@@ -83,7 +83,7 @@ func (hs *serverHandshakeStateTLS13) handshake() error {
 
 	c.isHandshakeComplete.Store(true)
 	// Enable kernel TLS if possible
-	if err := c.enableKernelTLS(c.cipherSuite, c.in.key, c.out.key, c.in.iv, c.out.iv); err != nil {
+	if err := c.enableKernelTLS(c.cipherSuite, c.in.key, c.out.key, c.in.iv, c.out.iv, &c.in.cipher, &c.out.cipher); err != nil {
 		return err
 	}
 
